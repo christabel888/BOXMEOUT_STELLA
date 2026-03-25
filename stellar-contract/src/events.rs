@@ -162,7 +162,8 @@ pub fn market_seeded(
 /// - Topics: [symbol!("mkt_paused"), market_id as Symbol]
 /// - Data:   (market_id: u64, paused_by: Address)
 pub fn market_paused(env: &Env, market_id: u64, paused_by: Address) {
-    todo!("Emit market_paused event")
+    let topics = (soroban_sdk::Symbol::new(env, "market_paused"), market_id);
+    env.events().publish(topics, (paused_by,));
 }
 
 /// Emitted when a paused market is resumed.
@@ -171,7 +172,8 @@ pub fn market_paused(env: &Env, market_id: u64, paused_by: Address) {
 /// - Topics: [symbol!("mkt_resumed"), market_id as Symbol]
 /// - Data:   (market_id: u64, resumed_by: Address)
 pub fn market_resumed(env: &Env, market_id: u64, resumed_by: Address) {
-    todo!("Emit market_resumed event")
+    let topics = (soroban_sdk::Symbol::new(env, "market_resumed"), market_id);
+    env.events().publish(topics, (resumed_by,));
 }
 
 /// Emitted when the betting window is manually closed.

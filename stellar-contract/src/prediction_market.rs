@@ -343,7 +343,56 @@ impl PredictionMarketContract {
         caller: Address,
         market_id: u64,
     ) -> Result<(), PredictionMarketError> {
-        todo!("Implement market pause")
+        // Require auth from the caller
+        caller.require_auth();
+
+        // Load Global Config
+        let config: Config = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::Config)
+            .ok_or(PredictionMarketError::NotInitialized)?;
+
+        // Authorization: Admin or Operator
+        let is_admin = caller == config.admin;
+        let is_operator = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::IsOperator(caller.clone()))
+            .unwrap_or(false);
+
+        if !is_admin && !is_operator {
+            return Err(PredictionMarketError::Unauthorized);
+        }
+
+        // Global emergency pause check
+        if config.emergency_paused {
+            return Err(PredictionMarketError::EmergencyPaused);
+        }
+
+        // Load specific Market
+        let mut market: Market = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::Market(market_id))
+            .ok_or(PredictionMarketError::MarketNotFound)?;
+
+        // Market must be Open to be paused
+        if market.status != crate::types::MarketStatus::Open {
+            return Err(PredictionMarketError::InvalidMarketStatus);
+        }
+
+        market.status = crate::types::MarketStatus::Paused;
+
+        // Persist updated market
+        env.storage()
+            .persistent()
+            .set(&crate::storage::DataKey::Market(market_id), &market);
+
+        // Emit market paused event
+        crate::events::market_paused(&env, market_id, caller);
+
+        Ok(())
     }
 
     /// Resume a paused market, re-enabling share trading.
@@ -359,7 +408,61 @@ impl PredictionMarketContract {
         caller: Address,
         market_id: u64,
     ) -> Result<(), PredictionMarketError> {
-        todo!("Implement market resume")
+        // Require auth from the caller
+        caller.require_auth();
+
+        // Load Global Config
+        let config: Config = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::Config)
+            .ok_or(PredictionMarketError::NotInitialized)?;
+
+        // Authorization: Admin or Operator
+        let is_admin = caller == config.admin;
+        let is_operator = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::IsOperator(caller.clone()))
+            .unwrap_or(false);
+
+        if !is_admin && !is_operator {
+            return Err(PredictionMarketError::Unauthorized);
+        }
+
+        // Global emergency pause check
+        if config.emergency_paused {
+            return Err(PredictionMarketError::EmergencyPaused);
+        }
+
+        // Load specific Market
+        let mut market: Market = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::Market(market_id))
+            .ok_or(PredictionMarketError::MarketNotFound)?;
+
+        // Market must be Paused to be resumed
+        if market.status != crate::types::MarketStatus::Paused {
+            return Err(PredictionMarketError::InvalidMarketStatus);
+        }
+
+        // Betting time must not have passed
+        if market.betting_close_time <= env.ledger().timestamp() {
+            return Err(PredictionMarketError::ResolutionDeadlinePassed); // Use appropriate error for betting closed
+        }
+
+        market.status = crate::types::MarketStatus::Open;
+
+        // Persist updated market
+        env.storage()
+            .persistent()
+            .set(&crate::storage::DataKey::Market(market_id), &market);
+
+        // Emit market resumed event
+        crate::events::market_resumed(&env, market_id, caller);
+
+        Ok(())
     }
 
     /// Manually close the betting window early (admin or operator).

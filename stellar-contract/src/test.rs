@@ -232,3 +232,58 @@ fn test_update_market_metadata_too_long() {
 
     client.update_market_metadata(&admin, &market_id, &new_metadata);
 }
+
+#[test]
+fn test_pause_market_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_test(&env);
+    let market_id = 1u64;
+    create_test_market(&env, &client.address, market_id, &admin);
+
+    client.pause_market(&admin, &market_id);
+
+    // Verify storage update
+    env.as_contract(&client.address, || {
+        let updated_market: Market = env.storage().persistent().get(&DataKey::Market(market_id)).unwrap();
+        assert_eq!(updated_market.status, crate::types::MarketStatus::Paused);
+    });
+}
+
+#[test]
+fn test_resume_market_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client) = setup_test(&env);
+    let market_id = 1u64;
+    let mut market = create_test_market(&env, &client.address, market_id, &admin);
+    market.status = crate::types::MarketStatus::Paused;
+    
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::Market(market_id), &market);
+    });
+
+    client.resume_market(&admin, &market_id);
+
+    // Verify storage update
+    env.as_contract(&client.address, || {
+        let updated_market: Market = env.storage().persistent().get(&DataKey::Market(market_id)).unwrap();
+        assert_eq!(updated_market.status, crate::types::MarketStatus::Open);
+    });
+}
+
+#[test]
+#[should_panic]
+fn test_pause_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = setup_test(&env);
+    let unauthorized_user = Address::generate(&env);
+    let market_id = 1u64;
+    create_test_market(&env, &client.address, market_id, &unauthorized_user);
+
+    client.pause_market(&unauthorized_user, &market_id);
+}
