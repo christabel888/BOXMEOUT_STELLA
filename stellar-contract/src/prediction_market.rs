@@ -1,5 +1,6 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
+use crate::amm;
 use crate::errors::PredictionMarketError;
 use crate::types::{
     AmmPool, Config, Dispute, FeeConfig, LpPosition, Market, MarketMetadata, MarketStats,
@@ -850,7 +851,58 @@ impl PredictionMarketContract {
         outcome_id: u32,
         collateral_in: i128,
     ) -> Result<TradeReceipt, PredictionMarketError> {
-        todo!("Implement read-only buy quote / price preview")
+        if collateral_in <= 0 {
+            return Err(PredictionMarketError::TradeTooSmall);
+        }
+
+        let pool = Self::get_amm_pool(env.clone(), market_id)?;
+        let config = Self::get_config(env)?;
+
+        if (outcome_id as usize) >= pool.reserves.len() as usize {
+            return Err(PredictionMarketError::InvalidOutcome);
+        }
+
+        let protocol_fee = collateral_in
+            .checked_mul(config.fee_config.protocol_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let lp_fee = collateral_in
+            .checked_mul(config.fee_config.lp_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let creator_fee = collateral_in
+            .checked_mul(config.fee_config.creator_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let total_fees = protocol_fee
+            .checked_add(lp_fee)
+            .and_then(|x| x.checked_add(creator_fee))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let net_collateral = collateral_in
+            .checked_sub(total_fees)
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        if net_collateral <= 0 {
+            return Err(PredictionMarketError::ArithmeticError);
+        }
+
+        let shares_out = amm::calc_buy_shares(&pool, outcome_id as usize, net_collateral);
+        let simulated_pool =
+            amm::update_reserves_buy(pool, outcome_id as usize, net_collateral, shares_out);
+        let new_price_bps = amm::calc_price_bps(&simulated_pool, outcome_id as usize);
+
+        let avg_price_bps = ((collateral_in
+            .checked_mul(10_000)
+            .ok_or(PredictionMarketError::ArithmeticError)?)
+            / shares_out)
+            .clamp(0, 10_000) as u32;
+
+        Ok(TradeReceipt {
+            collateral_delta: collateral_in,
+            shares_delta: shares_out,
+            avg_price_bps,
+            total_fees,
+            new_price_bps,
+        })
     }
 
     /// Preview how much collateral a seller would receive for a given share amount.
@@ -867,7 +919,58 @@ impl PredictionMarketContract {
         outcome_id: u32,
         shares_in: i128,
     ) -> Result<TradeReceipt, PredictionMarketError> {
-        todo!("Implement read-only sell quote / price preview")
+        if shares_in <= 0 {
+            return Err(PredictionMarketError::InsufficientShares);
+        }
+
+        let pool = Self::get_amm_pool(env.clone(), market_id)?;
+        let config = Self::get_config(env)?;
+
+        if (outcome_id as usize) >= pool.reserves.len() as usize {
+            return Err(PredictionMarketError::InvalidOutcome);
+        }
+
+        let gross_collateral_out = amm::calc_sell_collateral(&pool, outcome_id as usize, shares_in);
+        let protocol_fee = gross_collateral_out
+            .checked_mul(config.fee_config.protocol_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let lp_fee = gross_collateral_out
+            .checked_mul(config.fee_config.lp_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let creator_fee = gross_collateral_out
+            .checked_mul(config.fee_config.creator_fee_bps as i128)
+            .and_then(|x| x.checked_div(10_000))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let total_fees = protocol_fee
+            .checked_add(lp_fee)
+            .and_then(|x| x.checked_add(creator_fee))
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        let net_collateral_out = gross_collateral_out
+            .checked_sub(total_fees)
+            .ok_or(PredictionMarketError::ArithmeticError)?;
+        if net_collateral_out <= 0 {
+            return Err(PredictionMarketError::ArithmeticError);
+        }
+
+        let simulated_pool =
+            amm::update_reserves_sell(pool, outcome_id as usize, shares_in, gross_collateral_out);
+        let new_price_bps = amm::calc_price_bps(&simulated_pool, outcome_id as usize);
+
+        let avg_price_bps = ((net_collateral_out
+            .checked_mul(10_000)
+            .ok_or(PredictionMarketError::ArithmeticError)?)
+            / shares_in)
+            .clamp(0, 10_000) as u32;
+
+        Ok(TradeReceipt {
+            collateral_delta: net_collateral_out,
+            shares_delta: shares_in,
+            avg_price_bps,
+            total_fees,
+            new_price_bps,
+        })
     }
 
     /// Return live volume and participant statistics for a market.
