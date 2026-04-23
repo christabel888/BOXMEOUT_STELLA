@@ -26,40 +26,7 @@ const NETWORK_PASSPHRASE =
 
 const LS_KEY = 'boxmeout_wallet_address';
 
-// ─── Wallet connection ────────────────────────────────────────────────────────
-
-export async function connectWallet(): Promise<string> {
-  if (typeof window === 'undefined') throw new Error('Browser only');
-
-  const freighter = (window as any).freighter;
-  const albedo = (window as any).albedo;
-
-  if (freighter) {
-    await freighter.requestAccess();
-    const { publicKey } = await freighter.getPublicKey();
-    localStorage.setItem(LS_KEY, publicKey);
-    return publicKey;
-  }
-
-  if (albedo) {
-    const { pubkey } = await albedo.publicKey({ token: 'boxmeout' });
-    localStorage.setItem(LS_KEY, pubkey);
-    return pubkey;
-  }
-
-  throw new Error('WalletNotInstalledError: Install Freighter or Albedo');
-}
-
-export function disconnectWallet(): void {
-  localStorage.removeItem(LS_KEY);
-}
-
-export function getConnectedAddress(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(LS_KEY);
-}
-
-// ─── Transaction helpers ──────────────────────────────────────────────────────
+// ─── Transaction helper ───────────────────────────────────────────────────────
 
 async function buildAndSubmit(
   contractAddress: string,
@@ -71,8 +38,8 @@ async function buildAndSubmit(
 
   const server = new SorobanRpc.Server(SOROBAN_RPC_URL);
   const account = await server.getAccount(address);
-
   const contract = new Contract(contractAddress);
+
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -113,7 +80,36 @@ async function buildAndSubmit(
   return submitRes.hash;
 }
 
-// ─── Public contract invocations ─────────────────────────────────────────────
+// ─── Wallet connection ────────────────────────────────────────────────────────
+
+export async function connectWallet(): Promise<string> {
+  if (typeof window === 'undefined') throw new Error('Browser only');
+  const freighter = (window as any).freighter;
+  const albedo = (window as any).albedo;
+  if (freighter) {
+    await freighter.requestAccess();
+    const { publicKey } = await freighter.getPublicKey();
+    localStorage.setItem(LS_KEY, publicKey);
+    return publicKey;
+  }
+  if (albedo) {
+    const { pubkey } = await albedo.publicKey({ token: 'boxmeout' });
+    localStorage.setItem(LS_KEY, pubkey);
+    return pubkey;
+  }
+  throw new Error('WalletNotInstalledError: Install Freighter or Albedo');
+}
+
+export function disconnectWallet(): void {
+  localStorage.removeItem(LS_KEY);
+}
+
+export function getConnectedAddress(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(LS_KEY);
+}
+
+// ─── Contract invocations ─────────────────────────────────────────────────────
 
 export async function submitBet(
   market_contract_address: string,
@@ -126,20 +122,44 @@ export async function submitBet(
   ]);
 }
 
-export async function submitClaim(
-  market_contract_address: string,
-): Promise<string> {
+export async function submitClaim(market_contract_address: string): Promise<string> {
   return buildAndSubmit(market_contract_address, 'claim_winnings', []);
 }
 
-/**
- * Builds and submits a claim_refund contract invocation (cancelled market).
- * Returns the transaction hash on confirmation.
- */
-export async function submitRefund(
-  market_contract_address: string,
-): Promise<string> {
+export async function submitRefund(market_contract_address: string): Promise<string> {
   return buildAndSubmit(market_contract_address, 'claim_refund', []);
+}
+
+export interface CreateMarketParams {
+  matchId: string;
+  fighterA: string;
+  fighterB: string;
+  weightClass: string;
+  venue: string;
+  titleFight: boolean;
+  scheduledAt: string;
+  minBetXlm: number;
+  maxBetXlm: number;
+  feeBps: number;
+  lockBeforeMinutes: number;
+}
+
+export async function createMarket(params: CreateMarketParams): Promise<string> {
+  const factoryAddress = process.env.NEXT_PUBLIC_MARKET_FACTORY_ADDRESS;
+  if (!factoryAddress) throw new Error('NEXT_PUBLIC_MARKET_FACTORY_ADDRESS not set');
+  return buildAndSubmit(factoryAddress, 'create_market', [
+    nativeToScVal(params.matchId, { type: 'string' }),
+    nativeToScVal(params.fighterA, { type: 'string' }),
+    nativeToScVal(params.fighterB, { type: 'string' }),
+    nativeToScVal(params.weightClass, { type: 'string' }),
+    nativeToScVal(params.venue, { type: 'string' }),
+    nativeToScVal(params.titleFight, { type: 'bool' }),
+    nativeToScVal(BigInt(new Date(params.scheduledAt).getTime()), { type: 'u64' }),
+    nativeToScVal(xlmToStroops(params.minBetXlm), { type: 'i128' }),
+    nativeToScVal(xlmToStroops(params.maxBetXlm), { type: 'i128' }),
+    nativeToScVal(params.feeBps, { type: 'u32' }),
+    nativeToScVal(params.lockBeforeMinutes, { type: 'u32' }),
+  ]);
 }
 
 // ─── Balance ──────────────────────────────────────────────────────────────────
@@ -147,21 +167,18 @@ export async function submitRefund(
 export async function getWalletBalance(): Promise<number> {
   const address = getConnectedAddress();
   if (!address) return 0;
-
   try {
     const res = await fetch(`${HORIZON_URL}/accounts/${address}`);
     if (!res.ok) return 0;
     const data = await res.json();
-    const native = (data.balances as any[]).find(
-      (b: any) => b.asset_type === 'native',
-    );
+    const native = (data.balances as any[]).find((b: any) => b.asset_type === 'native');
     return native ? parseFloat(native.balance) : 0;
   } catch {
     return 0;
   }
 }
 
-// ─── Unit helpers ─────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function xlmToStroops(xlm: number): bigint {
   const [whole, frac = ''] = xlm.toString().split('.');
